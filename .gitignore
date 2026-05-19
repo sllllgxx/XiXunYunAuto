@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 *.pyo
 output/raw_responses/
+config/config.json

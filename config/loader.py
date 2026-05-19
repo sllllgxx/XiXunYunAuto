@@ -31,11 +31,15 @@ def load_config(config_path: str, is_github_actions: bool) -> ResolvedConfig:
         raise ConfigError(f"配置文件不存在: {config_file.resolve()}")
 
     # 先取出顶层区块，整套解析逻辑都围绕这些固定区块展开。
-    raw_config = json.loads(config_file.read_text(encoding="utf-8"))
-    runtime_section = raw_config.get("runtime", {})
-    github_actions_section = raw_config.get("github_actions", {})
-    account_section = raw_config.get("account", {})
-    notification_section = raw_config.get("notification", {})
+    raw_config = _load_json_config(config_file)
+    runtime_section = _ensure_mapping_value(raw_config.get("runtime", {}), "runtime")
+    github_actions_section = _ensure_mapping_value(
+        raw_config.get("github_actions", {}), "github_actions"
+    )
+    account_section = _ensure_mapping_value(raw_config.get("account", {}), "account")
+    notification_section = _ensure_mapping_value(
+        raw_config.get("notification", {}), "notification"
+    )
 
     # 这两个环境变量名本身也允许通过配置文件改写。
     secret_overrides_env = str(
@@ -179,8 +183,15 @@ def load_config(config_path: str, is_github_actions: bool) -> ResolvedConfig:
 
     # 通知请求模板允许保留动态结构，因此会单独走模板合并逻辑。
     notification_request_template = _merge_request_template(
-        notification_section.get("request", {}),
-        secret_overrides.get("notification", {}).get("request", {}),
+        _ensure_mapping_value(
+            notification_section.get("request", {}), "notification.request"
+        ),
+        _ensure_mapping_value(
+            _ensure_mapping_value(
+                secret_overrides.get("notification", {}), "notification"
+            ).get("request", {}),
+            "notification.request",
+        ),
         is_github_actions,
         source_map,
     )
@@ -191,12 +202,22 @@ def load_config(config_path: str, is_github_actions: bool) -> ResolvedConfig:
         enabled=notification_enabled,
         force_push=bool(notification_section.get("force_push", False)),
         request_template=notification_request_template,
-        message_layouts=deepcopy(notification_section.get("message_layouts", {})),
-        summary_layouts=deepcopy(notification_section.get("summary_layouts", {})),
+        message_layouts=deepcopy(
+            _ensure_mapping_value(
+                notification_section.get("message_layouts", {}),
+                "notification.message_layouts",
+            )
+        ),
+        summary_layouts=deepcopy(
+            _ensure_mapping_value(
+                notification_section.get("summary_layouts", {}),
+                "notification.summary_layouts",
+            )
+        ),
     )
 
     # 所有字段解析完成后再统一做运行前校验，避免主流程进入半配置状态。
-    _validate_config(account, runtime)
+    _validate_config(account, runtime, notification)
 
     return ResolvedConfig(
         config_path=str(config_file.resolve()),
@@ -274,7 +295,9 @@ def _load_secret_overrides(
         return {}
     try:
         parsed = json.loads(raw_value)
-        return parsed if isinstance(parsed, dict) else {}
+        if not isinstance(parsed, dict):
+            raise ConfigError(f"环境变量 {secret_overrides_env} 的顶层必须是对象")
+        return _strip_comment_entries(parsed)
     except json.JSONDecodeError as exc:
         raise ConfigError(
             f"环境变量 {secret_overrides_env} 不是合法 JSON: {exc}"
@@ -340,7 +363,16 @@ def _merge_request_template(
     method_value = str(merged.get("method", "POST")).strip() or "POST"
     body_type_value = str(merged.get("body_type", "form")).strip() or "form"
     merged["method"] = method_value.upper()
-    merged["body_type"] = body_type_value
+    merged["body_type"] = body_type_value.lower()
+    merged["headers"] = _ensure_mapping_value(
+        merged.get("headers", {}), "notification.request.headers"
+    )
+    merged["query_params"] = _ensure_mapping_value(
+        merged.get("query_params", {}), "notification.request.query_params"
+    )
+    merged["body_fields"] = _ensure_mapping_value(
+        merged.get("body_fields", {}), "notification.request.body_fields"
+    )
 
     source_map["notification.request.method"] = "json"
     source_map["notification.request.body_type"] = "json"
@@ -473,7 +505,48 @@ def _parse_bool_value(value: Any) -> bool | None:
     return None
 
 
-def _validate_config(account: AccountConfig, runtime: RuntimeOptions) -> None:
+def _load_json_config(config_file: Path) -> dict[str, Any]:
+    # 配置文件统一按 UTF-8 读取，并在进入字段解析前剔除说明性注释键。
+    try:
+        parsed = json.loads(config_file.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"配置文件不是合法 JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ConfigError("配置文件顶层必须是对象")
+    return _strip_comment_entries(parsed)
+
+
+def _strip_comment_entries(value: Any) -> Any:
+    # 说明性注释键只服务于人工阅读，不允许参与程序实际配置解析和映射。
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, child in value.items():
+            if _is_comment_key(key):
+                continue
+            cleaned[key] = _strip_comment_entries(child)
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_comment_entries(item) for item in value]
+    return value
+
+
+def _is_comment_key(key: Any) -> bool:
+    # 当前配置文件中以 _comment 开头的键都被视为说明文本。
+    return isinstance(key, str) and key.startswith("_comment")
+
+
+def _ensure_mapping_value(value: Any, field_name: str) -> dict[str, Any]:
+    # 需要对象结构的配置区块都会先经过这里校验，避免错误类型流入业务链路。
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{field_name} 必须是对象")
+    return value
+
+
+def _validate_config(
+    account: AccountConfig, runtime: RuntimeOptions, notification: NotificationConfig
+) -> None:
     # 这里负责最基础的运行前校验，确保主流程拿到的配置至少满足执行前提。
     if not account.school_name and not account.school_id:
         raise ConfigError("学校名称和学校 ID 至少需要填写一项")
@@ -502,3 +575,7 @@ def _validate_config(account: AccountConfig, runtime: RuntimeOptions) -> None:
         raise ConfigError("retry_interval_seconds 必须为 5")
     if runtime.sign_submit_delay_seconds < 0:
         raise ConfigError("sign_submit_delay_seconds 不能小于 0")
+
+    for field_name in ["headers", "query_params", "body_fields"]:
+        if not isinstance(notification.request_template.get(field_name, {}), dict):
+            raise ConfigError(f"notification.request.{field_name} 必须是对象")
