@@ -1,0 +1,7 @@
+# 项目中的全部 HTTP 请求都通过 curl_cffi 发出。
+# 这样可以让本地环境和 GitHub Actions 运行器尽量复用一致的 libcurl 行为。
+curl_cffi>=0.15.0,<1.0.0
+
+# 发起签到前的经纬度加密依赖 cryptography 提供的 RSA PKCS#1 v1.5 实现。
+# 这个依赖只负责坐标加密，不参与网络通信和业务判定。
+cryptography>=45.0.0,<47.0.0

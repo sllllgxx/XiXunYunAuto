@@ -1,0 +1,124 @@
+# 这个工作流负责按计划或按需触发习讯云自动签到主程序。
+# 触发方式同时覆盖定时执行和 Actions 页面手动执行。
+name: XiXunYunSignin
+
+# 运行记录名称直接展示工作流名和提交号，便于在历史记录里定位这次执行。
+run-name: ${{ github.workflow }} ${{ github.sha }}
+
+on:
+  # GitHub Actions 的 cron 表达式固定按 UTC 计算。
+  # 这里安排在 UTC 00:00 执行，对应北京时间每天 08:00。
+  schedule:
+    - cron: "0 0 * * *"
+
+  # 手动运行时提供强制推送开关，用来决定重复签到结果是否也发送通知。
+  workflow_dispatch:
+    inputs:
+      force_push_message:
+        description: "Whether or not to force a push message?"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+# 当前工作流只需要读取仓库内容，不需要向仓库写回文件。
+permissions:
+  contents: read
+
+jobs:
+  signin:
+    # 任务名称直接对应当前 Job 的职责。
+    name: Run Auto Signin
+
+    # 运行环境使用 GitHub 官方维护的 Ubuntu 运行器。
+    runs-on: ubuntu-latest
+
+    # 整个 Job 统一限制最大执行时间，避免外部接口长时间无响应导致任务挂起。
+    timeout-minutes: 15
+
+    steps:
+      # 先取回当前仓库代码，后续依赖安装和主程序执行都在当前工作区完成。
+      - name: Checkout Repository
+        uses: actions/checkout@main
+
+      # 安装 Python 运行环境，并开启 pip 缓存以减少重复下载。
+      - name: Setup Python
+        uses: actions/setup-python@main
+        with:
+          python-version: "*"
+          cache: "pip"
+
+      # 安装主程序运行所需的全部依赖。
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # 获取当前运行器的公网连接信息，并把真实返回内容直接写入日志。
+      - name: Get Connection Info
+        run: |
+          python - <<'PY'
+          import urllib.request
+
+          with urllib.request.urlopen("https://ifconfig.me/all.json", timeout=15) as response:
+              print(response.read().decode("utf-8"))
+          PY
+
+      # 日志里只输出最核心的工作流标识。
+      # 其他环境信息统一交给 Summary 展示。
+      - name: Print Runtime Information
+        run: |
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Commit SHA: $GITHUB_SHA"
+
+      # 执行主程序。
+      # 这里同时暴露字段级 Secret 和整包 Secret JSON，具体读取顺序由程序内部统一控制。
+      - name: Run Auto Signin
+        env:
+          # 手动运行时读取页面输入，定时运行时自动回落到 false。
+          XIXUNYUN_FORCE_PUSH: ${{ github.event.inputs.force_push_message || 'false' }}
+
+          # 整包 Secret JSON 允许一次性提供任意层级的敏感字段。
+          XIXUNYUN_SECRET_OVERRIDES_JSON: ${{ secrets.XIXUNYUN_SECRET_OVERRIDES_JSON }}
+
+          # 字段级 Secret 只在配置文件对应字段为空时参与补值。
+          XIXUNYUN_SCHOOL_NAME: ${{ secrets.XIXUNYUN_SCHOOL_NAME }}
+          XIXUNYUN_SCHOOL_ID: ${{ secrets.XIXUNYUN_SCHOOL_ID }}
+          XIXUNYUN_ACCOUNT: ${{ secrets.XIXUNYUN_ACCOUNT }}
+          XIXUNYUN_PASSWORD: ${{ secrets.XIXUNYUN_PASSWORD }}
+          XIXUNYUN_ADDRESS: ${{ secrets.XIXUNYUN_ADDRESS }}
+          XIXUNYUN_ADDRESS_NAME: ${{ secrets.XIXUNYUN_ADDRESS_NAME }}
+          XIXUNYUN_LONGITUDE: ${{ secrets.XIXUNYUN_LONGITUDE }}
+          XIXUNYUN_LATITUDE: ${{ secrets.XIXUNYUN_LATITUDE }}
+          XIXUNYUN_NOTIFICATION_ENABLED: ${{ secrets.XIXUNYUN_NOTIFICATION_ENABLED }}
+          XIXUNYUN_PUSH_URL: ${{ secrets.XIXUNYUN_PUSH_URL }}
+          XIXUNYUN_PUSH_DEVICE_KEY: ${{ secrets.XIXUNYUN_PUSH_DEVICE_KEY }}
+        run: |
+          python main.py
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" workflow_summary_snapshot.md
+          fi
+
+      # 把 Job Summary 的内容原样打印到日志中，便于直接核对页面展示结果。
+      - name: Print Summary Content
+        if: always()
+        run: |
+          if [ -f "workflow_summary_snapshot.md" ]; then
+            awk 'NF { print }' "workflow_summary_snapshot.md"
+          else
+            echo "Workflow summary snapshot file is unavailable."
+          fi
+
+      # 这个步骤只负责在日志结尾给出明确的完成标记。
+      # Summary 的正文内容由 Python 主程序写入 GITHUB_STEP_SUMMARY。
+      - name: Print Completion Marker
+        run: |
+          echo "The sign-in workflow has finished. Review the logs and the Job Summary."
+
+      # 工作流最后一步统一清理残留文件，和程序内部清理共同保证工作区收尾完整。
+      - name: Cleanup Runtime Artifacts
+        if: always()
+        run: |
+          python support/workflow_cleanup.py

@@ -1,0 +1,201 @@
+{
+  "_comment": "这是程序实际读取的配置文件。本地运行时直接填写这里。GitHub Actions 运行时，程序会先读取这里的字段值，只有字段为空时才继续读取整包 Secret JSON 或环境变量。",
+  "runtime": {
+    "_comment": "这里定义运行时基础参数。这个区块中的值会直接影响日志时间格式、原始响应输出方式、接口超时和签到前等待规则。",
+    "_comment_timezone": "timezone 表示程序内部统一使用的时区名称。日志时间、消息时间和 Summary 时间都基于这里计算。",
+    "timezone": "Asia/Shanghai",
+    "_comment_time_format": "time_format 表示时间文本格式。控制台日志、消息正文和 Summary 中的格式化时间都复用这个格式。",
+    "time_format": "%Y-%m-%d %H:%M:%S",
+    "_comment_console_raw_response_enabled": "console_raw_response_enabled 控制是否把接口原始响应预览打印到控制台。true 表示打印，false 表示不打印。",
+    "console_raw_response_enabled": false,
+    "_comment_txt_raw_response_enabled": "txt_raw_response_enabled 控制是否把原始响应完整写入 TXT 文件。true 表示落盘，false 表示只保留内存记录。",
+    "txt_raw_response_enabled": false,
+    "_comment_response_console_truncate": "response_console_truncate 表示控制台原始响应预览的最大字符数。超过这个长度时只展示截断后的前半段文本。",
+    "response_console_truncate": 1200,
+    "_comment_default_address_name": "default_address_name 表示地址名称缺失时使用的兜底文本。只有账号区块和签到查询结果都拿不到地址名称时才会依赖这个值。",
+    "default_address_name": "中国",
+    "_comment_request_timeout_seconds": "request_timeout_seconds 表示单次 HTTP 请求的超时秒数。业务接口和通知接口都会遵循这里的限制。",
+    "request_timeout_seconds": 30,
+    "_comment_retry_attempts": "retry_attempts 表示带重试阶段允许执行的总次数。当前程序要求这个值固定为 3。",
+    "retry_attempts": 3,
+    "_comment_retry_interval_seconds": "retry_interval_seconds 表示两次重试之间的等待秒数。当前程序要求这个值固定为 5。",
+    "retry_interval_seconds": 5,
+    "_comment_sign_submit_delay_seconds": "sign_submit_delay_seconds 表示发起签到前的额外等待秒数。设置为 0 表示不等待。",
+    "sign_submit_delay_seconds": 3
+  },
+  "github_actions": {
+    "_comment": "这个区块只在 GitHub Actions 环境中参与解析。这里定义整包 Secret JSON 和手动输入开关对应的环境变量名称。",
+    "_comment_secret_overrides_env": "secret_overrides_env 表示整包 Secret JSON 的环境变量名。程序会从这个环境变量读取任意层级的覆盖值。",
+    "secret_overrides_env": "XIXUNYUN_SECRET_OVERRIDES_JSON",
+    "_comment_manual_force_push_env": "manual_force_push_env 表示手动运行页面中的强制推送输入项映射到的环境变量名。",
+    "manual_force_push_env": "XIXUNYUN_FORCE_PUSH"
+  },
+  "account": {
+    "_comment": "这个区块保存签到主体和地点信息。学校、账号、密码用于登录。地址、地点名称和经纬度用于发起签到，留空时程序会尝试从签到查询接口中补足。",
+    "school_name": {
+      "_comment": "school_name 的 value 表示学校全称。只有 school_id 为空时程序才会使用这个名称去学校查询接口做精确匹配。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_SCHOOL_NAME"
+    },
+    "school_id": {
+      "_comment": "school_id 的 value 表示学校 ID 字符串。填写后程序会直接使用这个值，并跳过学校名称查询。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_SCHOOL_ID"
+    },
+    "account": {
+      "_comment": "account 的 value 表示习讯云登录账号。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_ACCOUNT"
+    },
+    "password": {
+      "_comment": "password 的 value 表示习讯云登录密码。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_PASSWORD"
+    },
+    "address": {
+      "_comment": "address 的 value 表示签到提交时使用的详细地址。留空时程序会优先尝试从签到查询接口返回的 mid_sign_address 中补足。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_ADDRESS"
+    },
+    "address_name": {
+      "_comment": "address_name 的 value 表示地点名称。留空时程序会先看账号配置，再回退到运行时默认地址名称。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_ADDRESS_NAME"
+    },
+    "longitude": {
+      "_comment": "longitude 的 value 表示明文经度。留空时程序会尝试从签到查询接口返回的 mid_sign_longitude 中补足。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_LONGITUDE"
+    },
+    "latitude": {
+      "_comment": "latitude 的 value 表示明文纬度。留空时程序会尝试从签到查询接口返回的 mid_sign_latitude 中补足。env_name 表示对应的环境变量名。",
+      "value": "",
+      "env_name": "XIXUNYUN_LATITUDE"
+    }
+  },
+  "notification": {
+    "_comment": "这个区块定义消息推送行为。这里既控制是否推送，也描述推送请求模板和 Summary 区块顺序。",
+    "_comment_enabled": "enabled 表示是否开启消息推送。GitHub Actions 环境中，这个值会先尝试从整包 Secret JSON 或环境变量读取，再回退到这里。",
+    "enabled": false,
+    "_comment_force_push": "force_push 表示重复签到结果是否仍然发送通知。GitHub Actions 手动运行时，这个值还可以被工作流输入覆盖。",
+    "force_push": false,
+    "message_layouts": {
+      "_comment": "这里声明不同结果状态下的消息正文区块顺序。数组里移除某个区块名后，对应内容就不会出现在通知正文中。",
+      "_comment_success_sections": "success_sections 表示签到成功时的正文区块顺序。",
+      "success_sections": [
+        "score_summary",
+        "recent_signs",
+        "profile",
+        "force_push",
+        "source",
+        "status"
+      ],
+      "_comment_failure_sections": "failure_sections 表示签到失败时的正文区块顺序。",
+      "failure_sections": [
+        "score_summary",
+        "recent_signs",
+        "profile",
+        "reason",
+        "source",
+        "status"
+      ],
+      "_comment_exception_sections": "exception_sections 表示程序异常时的正文区块顺序。",
+      "exception_sections": [
+        "reason",
+        "stage",
+        "error_location",
+        "context",
+        "source",
+        "status"
+      ],
+      "_comment_repeated_sections": "repeated_sections 表示重复签到时的正文区块顺序。",
+      "repeated_sections": [
+        "score_summary",
+        "recent_signs",
+        "profile",
+        "force_push",
+        "source",
+        "status"
+      ]
+    },
+    "summary_layouts": {
+      "_comment": "这里定义 GitHub Actions Summary 的区块顺序。sections 数组会按顺序决定每个区块的渲染位置。",
+      "_comment_sections": "sections 按顺序列出 Summary 区块键名。主程序会依次查找并渲染这些区块。",
+      "sections": [
+        "headline",
+        "config_sources",
+        "result",
+        "recent_signs",
+        "timeline",
+        "workflow_info",
+        "error"
+      ]
+    },
+    "request": {
+      "_comment": "这里给出一份可直接使用的 Bark 风格请求模板。程序会先解析固定值、环境变量和值来源，再按这里的定义发起通知请求。",
+      "url": {
+        "_comment": "url 描述推送地址来源。source 为 value 时优先使用 value，value 为空时再读取 env_name 指向的环境变量。",
+        "source": "value",
+        "value": "https://api.day.app/push/",
+        "env_name": "XIXUNYUN_PUSH_URL"
+      },
+      "_comment_method": "method 表示通知请求使用的 HTTP 方法。主程序会在发送前把它统一转换成大写。",
+      "method": "POST",
+      "_comment_body_type": "body_type 表示通知请求体的编码方式。json 表示走 json 请求体，form 表示走表单请求体。",
+      "body_type": "form",
+      "headers": {
+        "_comment": "headers 定义固定请求头。每个字段都支持固定值或环境变量补值。",
+        "Content-Type": {
+          "_comment": "Content-Type 指定通知接口的请求体类型。当前模板固定使用表单编码头。",
+          "source": "value",
+          "value": "application/x-www-form-urlencoded",
+          "env_name": ""
+        }
+      },
+      "_comment_query_params": "query_params 定义通知请求的查询参数。当前模板为空对象，表示默认不追加查询参数。",
+      "query_params": {},
+      "body_fields": {
+        "_comment": "body_fields 定义通知请求体字段。source 为 message 时读取程序生成的消息变量。source 为 value 时读取固定值或环境变量。",
+        "device_key": {
+          "_comment": "device_key 表示 Bark 设备标识。这里允许固定填写，也允许从环境变量读取。",
+          "source": "value",
+          "value": "",
+          "env_name": "XIXUNYUN_PUSH_DEVICE_KEY"
+        },
+        "title": {
+          "_comment": "title 表示通知标题。它从消息变量 title 中取值。",
+          "source": "message",
+          "variable": "title"
+        },
+        "subtitle": {
+          "_comment": "subtitle 表示通知副标题。它从消息变量 current_time 中取值。",
+          "source": "message",
+          "variable": "current_time"
+        },
+        "body": {
+          "_comment": "body 表示通知正文。它从消息变量 body 中取值。",
+          "source": "message",
+          "variable": "body"
+        },
+        "level": {
+          "_comment": "level 表示 Bark 消息等级。当前模板固定使用 timeSensitive。",
+          "source": "value",
+          "value": "timeSensitive",
+          "env_name": ""
+        },
+        "group": {
+          "_comment": "group 表示通知分组名称。当前模板固定使用习讯云。",
+          "source": "value",
+          "value": "习讯云",
+          "env_name": ""
+        },
+        "isArchive": {
+          "_comment": "isArchive 表示是否把通知归档。当前模板固定传 1。",
+          "source": "value",
+          "value": "1",
+          "env_name": ""
+        }
+      }
+    }
+  }
+}

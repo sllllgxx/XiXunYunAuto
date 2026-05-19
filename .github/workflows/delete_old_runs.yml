@@ -1,0 +1,100 @@
+# 这个工作流只负责清理旧的 GitHub Actions 运行记录。
+# 它和主签到流程完全分离，不会影响自动签到任务本身。
+name: DeleteOldRuns
+
+# 运行名称直接带上工作流名和当前运行 ID，便于在历史记录里快速定位。
+run-name: ${{ github.workflow }} ${{ github.run_id }}
+
+on:
+  # GitHub Actions 的 cron 表达式固定按 UTC 计算。
+  # 这里安排在 UTC 16:00 执行，对应北京时间每天 00:00。
+  schedule:
+    - cron: "0 16 * * *"
+
+  # 手动运行时允许直接指定清理阈值小时数。
+  workflow_dispatch:
+    inputs:
+      hour_count:
+        description: "You want to delete records from how many hours ago?"
+        required: true
+        default: "168"
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  delete_old_runs:
+    # Job 名称直接反映当前任务职责。
+    name: Run Delete Old Runs
+
+    # 运行环境使用 GitHub 官方维护的 Ubuntu 运行器。
+    runs-on: ubuntu-latest
+
+    # 整个 Job 统一限制最大执行时间，避免接口异常时长时间占用运行器。
+    timeout-minutes: 15
+
+    steps:
+      # 先取回仓库代码，后续清理脚本直接在工作区执行。
+      - name: Checkout Repository
+        uses: actions/checkout@main
+
+      # 配置 Python 运行环境。
+      - name: Setup Python
+        uses: actions/setup-python@main
+        with:
+          python-version: "*"
+
+      # 获取当前运行器的公网连接信息，并把真实返回内容直接写入日志。
+      - name: Get Connection Info
+        run: |
+          python - <<'PY'
+          import urllib.request
+
+          with urllib.request.urlopen("https://ifconfig.me/all.json", timeout=15) as response:
+              print(response.read().decode("utf-8"))
+          PY
+
+      # 日志里只打印本次清理最核心的工作流标识。
+      # 其余运行细节统一交给脚本日志和 Job Summary 承载。
+      - name: Print Runtime Information
+        run: |
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Repository: $GITHUB_REPOSITORY"
+
+      # 执行运行记录清理脚本。
+      - name: Run Delete Old Runs
+        env:
+          HOUR_COUNT: ${{ github.event.inputs.hour_count || '168' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY_NAME: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: |
+          python support/delete_old_runs.py
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" delete_old_runs_summary_snapshot.md
+          fi
+
+      # 把当前工作流写出的 Summary 原样打印到日志，便于直接核对页面内容。
+      - name: Print Summary Content
+        if: always()
+        run: |
+          if [ -f "delete_old_runs_summary_snapshot.md" ]; then
+            awk 'NF { print }' "delete_old_runs_summary_snapshot.md"
+          else
+            echo "DeleteOldRuns summary snapshot file is unavailable."
+          fi
+
+      # 这个步骤只负责在日志结尾留下明确的完成标记。
+      - name: Print Completion Marker
+        run: |
+          echo "The delete old runs workflow has finished. Review the logs and the Job Summary."
+
+      # 工作流最后一步统一清理残留文件，和脚本内部清理共同保证工作区收尾完整。
+      - name: Cleanup Runtime Artifacts
+        if: always()
+        run: |
+          python support/workflow_cleanup.py

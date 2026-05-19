@@ -1,0 +1,504 @@
+# 这个模块统一负责配置文件读取、补值、来源标记和运行前校验。
+# 主流程只接收解析完成后的配置对象，不直接操作原始 JSON 结构。
+from __future__ import annotations
+
+import json
+import os
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+from core.models import (
+    AccountConfig,
+    NotificationConfig,
+    ResolvedConfig,
+    RuntimeOptions,
+)
+
+
+NOTIFICATION_ENABLED_ENV_NAME = "XIXUNYUN_NOTIFICATION_ENABLED"
+
+
+class ConfigError(Exception):
+    # 这个异常用于表示配置内容本身存在问题，错误信息需要能直接指导用户定位。
+    pass
+
+
+def load_config(config_path: str, is_github_actions: bool) -> ResolvedConfig:
+    # 配置读取流程固定为先加载 JSON，再按字段规则补 Secret JSON 和环境变量。
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise ConfigError(f"配置文件不存在: {config_file.resolve()}")
+
+    # 先取出顶层区块，整套解析逻辑都围绕这些固定区块展开。
+    raw_config = json.loads(config_file.read_text(encoding="utf-8"))
+    runtime_section = raw_config.get("runtime", {})
+    github_actions_section = raw_config.get("github_actions", {})
+    account_section = raw_config.get("account", {})
+    notification_section = raw_config.get("notification", {})
+
+    # 这两个环境变量名本身也允许通过配置文件改写。
+    secret_overrides_env = str(
+        github_actions_section.get(
+            "secret_overrides_env", "XIXUNYUN_SECRET_OVERRIDES_JSON"
+        )
+    ).strip()
+    manual_force_push_env = str(
+        github_actions_section.get("manual_force_push_env", "XIXUNYUN_FORCE_PUSH")
+    ).strip()
+    secret_overrides = _load_secret_overrides(secret_overrides_env, is_github_actions)
+
+    # source_map 负责记录每个字段最终命中的来源，供 Summary 直接复用。
+    source_map: dict[str, str] = {}
+    _mark_plain_section_sources(
+        runtime_section,
+        [
+            "timezone",
+            "time_format",
+            "console_raw_response_enabled",
+            "txt_raw_response_enabled",
+            "response_console_truncate",
+            "default_address_name",
+            "request_timeout_seconds",
+            "retry_attempts",
+            "retry_interval_seconds",
+            "sign_submit_delay_seconds",
+        ],
+        "runtime",
+        source_map,
+    )
+    _mark_plain_section_sources(
+        notification_section, ["force_push"], "notification", source_map
+    )
+    _mark_plain_section_sources(
+        github_actions_section,
+        ["secret_overrides_env", "manual_force_push_env"],
+        "github_actions",
+        source_map,
+    )
+
+    # runtime 区块字段不支持动态补值，缺失时只按默认值回退。
+    timezone_name = str(runtime_section.get("timezone", "Asia/Shanghai")).strip()
+    if not timezone_name:
+        timezone_name = "Asia/Shanghai"
+
+    time_format = str(runtime_section.get("time_format", "%Y-%m-%d %H:%M:%S")).strip()
+    if not time_format:
+        time_format = "%Y-%m-%d %H:%M:%S"
+
+    default_address_name = str(
+        runtime_section.get("default_address_name", "中国")
+    ).strip()
+    if not default_address_name:
+        default_address_name = "中国"
+
+    runtime = RuntimeOptions(
+        timezone_name=timezone_name,
+        time_format=time_format,
+        console_raw_response_enabled=bool(
+            runtime_section.get("console_raw_response_enabled", False)
+        ),
+        txt_raw_response_enabled=bool(
+            runtime_section.get("txt_raw_response_enabled", False)
+        ),
+        response_console_truncate=int(
+            runtime_section.get("response_console_truncate", 1200) or 1200
+        ),
+        default_address_name=default_address_name,
+        request_timeout_seconds=int(
+            runtime_section.get("request_timeout_seconds", 30) or 30
+        ),
+        retry_attempts=int(runtime_section.get("retry_attempts", 3) or 3),
+        retry_interval_seconds=int(
+            runtime_section.get("retry_interval_seconds", 5) or 5
+        ),
+        sign_submit_delay_seconds=int(
+            runtime_section.get("sign_submit_delay_seconds", 0) or 0
+        ),
+    )
+
+    # account 区块按字段级规则解析，支持 JSON、整包 Secret JSON 和字段级环境变量补值。
+    account = AccountConfig(
+        school_name=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "school_name"],
+            is_github_actions,
+            source_map,
+        ),
+        school_id=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "school_id"],
+            is_github_actions,
+            source_map,
+        ),
+        account=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "account"],
+            is_github_actions,
+            source_map,
+        ),
+        password=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "password"],
+            is_github_actions,
+            source_map,
+        ),
+        address=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "address"],
+            is_github_actions,
+            source_map,
+        ),
+        address_name=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "address_name"],
+            is_github_actions,
+            source_map,
+        ),
+        longitude=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "longitude"],
+            is_github_actions,
+            source_map,
+        ),
+        latitude=_resolve_value(
+            account_section,
+            secret_overrides,
+            ["account", "latitude"],
+            is_github_actions,
+            source_map,
+        ),
+    )
+
+    # 通知请求模板允许保留动态结构，因此会单独走模板合并逻辑。
+    notification_request_template = _merge_request_template(
+        notification_section.get("request", {}),
+        secret_overrides.get("notification", {}).get("request", {}),
+        is_github_actions,
+        source_map,
+    )
+    notification_enabled = _resolve_notification_enabled(
+        notification_section, secret_overrides, is_github_actions, source_map
+    )
+    notification = NotificationConfig(
+        enabled=notification_enabled,
+        force_push=bool(notification_section.get("force_push", False)),
+        request_template=notification_request_template,
+        message_layouts=deepcopy(notification_section.get("message_layouts", {})),
+        summary_layouts=deepcopy(notification_section.get("summary_layouts", {})),
+    )
+
+    # 所有字段解析完成后再统一做运行前校验，避免主流程进入半配置状态。
+    _validate_config(account, runtime)
+
+    return ResolvedConfig(
+        config_path=str(config_file.resolve()),
+        runtime=runtime,
+        github_secret_overrides_env=secret_overrides_env,
+        github_force_push_env=manual_force_push_env,
+        account=account,
+        notification=notification,
+        source_map=source_map,
+    )
+
+
+def resolve_force_push(config: ResolvedConfig, is_github_actions: bool) -> bool:
+    # 这个兼容入口只返回布尔结果，底层仍然复用同时返回来源信息的实现。
+    enabled, _ = resolve_force_push_with_source(config, is_github_actions)
+    return enabled
+
+
+def resolve_force_push_with_source(
+    config: ResolvedConfig, is_github_actions: bool
+) -> tuple[bool, str]:
+    # 强制推送开关在 GitHub Actions 中优先读取手动输入，其次才回退到配置文件里的 force_push。
+    if is_github_actions:
+        raw_value = os.getenv(config.github_force_push_env, "").strip().lower()
+        if raw_value in {"true", "1", "yes", "on"}:
+            return True, f"workflow_input:{config.github_force_push_env}"
+        if raw_value in {"false", "0", "no", "off"}:
+            return False, f"workflow_input:{config.github_force_push_env}"
+    return config.notification.force_push, config.source_map.get(
+        "notification.force_push", "json"
+    )
+
+
+def _resolve_notification_enabled(
+    notification_section: dict[str, Any],
+    secret_overrides: dict[str, Any],
+    is_github_actions: bool,
+    source_map: dict[str, str],
+) -> bool:
+    # 消息推送开关在 GitHub Actions 中优先读取 Repository Secret，再回退到 JSON。
+    source_key = "notification.enabled"
+    if is_github_actions:
+        override_value = _deep_get(secret_overrides, ["notification", "enabled"])
+        parsed_override_value = _parse_bool_value(override_value)
+        if parsed_override_value is not None:
+            source_map[source_key] = "secret_json:notification"
+            return parsed_override_value
+
+        parsed_env_value = _parse_bool_value(
+            os.getenv(NOTIFICATION_ENABLED_ENV_NAME, "")
+        )
+        if parsed_env_value is not None:
+            source_map[source_key] = f"env:{NOTIFICATION_ENABLED_ENV_NAME}"
+            return parsed_env_value
+
+    if "enabled" in notification_section:
+        parsed_json_value = _parse_bool_value(notification_section.get("enabled"))
+        source_map[source_key] = "json"
+        return parsed_json_value if parsed_json_value is not None else False
+
+    source_map[source_key] = "default"
+    return False
+
+
+def _load_secret_overrides(
+    secret_overrides_env: str, is_github_actions: bool
+) -> dict[str, Any]:
+    # 整包 Secret JSON 只在 GitHub Actions 中生效，用来提供任意层级的敏感字段。
+    if not is_github_actions:
+        return {}
+    if not secret_overrides_env:
+        return {}
+    raw_value = os.getenv(secret_overrides_env, "").strip()
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"环境变量 {secret_overrides_env} 不是合法 JSON: {exc}"
+        ) from exc
+
+
+def _resolve_value(
+    section: dict[str, Any],
+    secret_overrides: dict[str, Any],
+    path_parts: list[str],
+    is_github_actions: bool,
+    source_map: dict[str, str],
+) -> str:
+    # 单个字段严格执行先 JSON、再整包 Secret JSON、最后字段级环境变量的读取顺序。
+    field_name = path_parts[-1]
+    config_spec = deepcopy(section.get(field_name, {}))
+    json_value = ""
+    env_name = ""
+
+    if isinstance(config_spec, dict):
+        json_value = str(config_spec.get("value", "")).strip()
+        env_name = str(config_spec.get("env_name", "")).strip()
+    else:
+        json_value = str(config_spec).strip()
+
+    source_key = ".".join(path_parts)
+    if not _is_blank(json_value):
+        # JSON 中只要已经给出非空值，就直接作为最终结果，不再继续向后补值。
+        source_map[source_key] = "json"
+        return json_value
+
+    override_value = _deep_get(secret_overrides, path_parts)
+    if is_github_actions and not _is_blank(override_value):
+        # 整包 Secret JSON 只在 JSON 留空时参与补值。
+        source_map[source_key] = f"secret_json:{path_parts[0]}"
+        return str(override_value).strip()
+
+    if is_github_actions and env_name:
+        env_value = os.getenv(env_name, "").strip()
+        if not _is_blank(env_value):
+            # 字段级环境变量是最后一级补值来源。
+            source_map[source_key] = f"env:{env_name}"
+            return env_value
+
+    source_map[source_key] = "empty"
+    return ""
+
+
+def _merge_request_template(
+    base_request_template: dict[str, Any],
+    secret_request_overrides: dict[str, Any],
+    is_github_actions: bool,
+    source_map: dict[str, str],
+) -> dict[str, Any]:
+    # 推送模板允许包含任意结构，这里只做通用补值和来源标记，不假设固定字段集合。
+    merged = deepcopy(base_request_template)
+
+    if is_github_actions:
+        # 只有在 GitHub Actions 中才会用整包 Secret JSON 去填补模板里的空值。
+        merged = _deep_fill_blank_values(merged, secret_request_overrides)
+
+    # method 和 body_type 会在模板层统一归一化，发送逻辑直接使用归一化后的结果。
+    method_value = str(merged.get("method", "POST")).strip() or "POST"
+    body_type_value = str(merged.get("body_type", "form")).strip() or "form"
+    merged["method"] = method_value.upper()
+    merged["body_type"] = body_type_value
+
+    source_map["notification.request.method"] = "json"
+    source_map["notification.request.body_type"] = "json"
+    source_map["notification.request.url"] = _resolve_spec_source(
+        merged.get("url", {}), "notification.request.url", is_github_actions, source_map
+    )
+
+    _mark_mapping_sources(
+        merged.get("headers", {}),
+        "notification.request.headers",
+        is_github_actions,
+        source_map,
+    )
+    _mark_mapping_sources(
+        merged.get("query_params", {}),
+        "notification.request.query_params",
+        is_github_actions,
+        source_map,
+    )
+    _mark_mapping_sources(
+        merged.get("body_fields", {}),
+        "notification.request.body_fields",
+        is_github_actions,
+        source_map,
+    )
+    return merged
+
+
+def _mark_mapping_sources(
+    mapping: dict[str, Any],
+    prefix: str,
+    is_github_actions: bool,
+    source_map: dict[str, str],
+) -> None:
+    # 这里不展开 message 变量的实际值，只记录每个模板字段最终的来源类型。
+    for key, spec in mapping.items():
+        source_map[f"{prefix}.{key}"] = _resolve_spec_source(
+            spec, f"{prefix}.{key}", is_github_actions, source_map
+        )
+
+
+def _mark_plain_section_sources(
+    section: dict[str, Any],
+    field_names: list[str],
+    prefix: str,
+    source_map: dict[str, str],
+) -> None:
+    # 这类字段不支持额外补值，因此来源只区分为 JSON 或程序默认值。
+    for field_name in field_names:
+        source_map[f"{prefix}.{field_name}"] = (
+            "json" if field_name in section else "default"
+        )
+
+
+def _resolve_spec_source(
+    spec: Any, source_key: str, is_github_actions: bool, source_map: dict[str, str]
+) -> str:
+    # 这个函数只判断推送模板字段的来源类型，不返回字段本身的实际值。
+    if isinstance(spec, dict):
+        source_type = str(spec.get("source", "")).strip()
+        if source_type == "message":
+            return "message_variable"
+
+        json_value = spec.get("value", "")
+        env_name = str(spec.get("env_name", "")).strip()
+        if not _is_blank(json_value):
+            return "json"
+        if is_github_actions and env_name and not _is_blank(os.getenv(env_name, "")):
+            return f"env:{env_name}"
+    return "json"
+
+
+def _deep_fill_blank_values(base_value: Any, override_value: Any) -> Any:
+    # 这个深度合并函数只会在原值为空时填入覆盖值，保证 JSON 优先级始终高于 Secret。
+    if isinstance(base_value, dict) and "value" in base_value:
+        if not isinstance(override_value, dict):
+            merged_spec = deepcopy(base_value)
+            if _is_blank(merged_spec.get("value")) and not _is_blank(override_value):
+                merged_spec["value"] = override_value
+            return merged_spec
+
+    if isinstance(base_value, dict) and isinstance(override_value, dict):
+        merged: dict[str, Any] = deepcopy(base_value)
+        for key, override_child in override_value.items():
+            base_child = merged.get(key)
+            if key not in merged:
+                merged[key] = deepcopy(override_child)
+                continue
+            merged[key] = _deep_fill_blank_values(base_child, override_child)
+        return merged
+
+    if _is_blank(base_value) and not _is_blank(override_value):
+        return deepcopy(override_value)
+    return deepcopy(base_value)
+
+
+def _deep_get(data: dict[str, Any], path_parts: list[str]) -> Any:
+    # 按路径安全读取嵌套字典中的值，任何一级不存在都返回空字符串。
+    current: Any = data
+    for part in path_parts:
+        if not isinstance(current, dict) or part not in current:
+            return ""
+        current = current[part]
+    return current
+
+
+def _is_blank(value: Any) -> bool:
+    # None、空白字符串以及空集合都视为未填写。
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _parse_bool_value(value: Any) -> bool | None:
+    # 布尔型配置统一在这里解析，非法值返回 None 供上层继续回退。
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
+def _validate_config(account: AccountConfig, runtime: RuntimeOptions) -> None:
+    # 这里负责最基础的运行前校验，确保主流程拿到的配置至少满足执行前提。
+    if not account.school_name and not account.school_id:
+        raise ConfigError("学校名称和学校 ID 至少需要填写一项")
+    if account.school_id and not account.school_id.isdigit():
+        raise ConfigError("学校 ID 必须是纯数字字符串")
+    if not account.account:
+        raise ConfigError("账号不能为空")
+    if not account.password:
+        raise ConfigError("密码不能为空")
+
+    for field_name, value in {
+        "longitude": account.longitude,
+        "latitude": account.latitude,
+    }.items():
+        if value:
+            try:
+                # 经纬度只要填写，就必须能转成浮点数。
+                float(value)
+            except ValueError as exc:
+                raise ConfigError(f"{field_name} 必须是度数加小数点格式") from exc
+
+    # 这三个运行参数在当前项目中被视为固定规则，配置偏离时直接视为无效。
+    if runtime.retry_attempts != 3:
+        raise ConfigError("retry_attempts 必须为 3")
+    if runtime.retry_interval_seconds != 5:
+        raise ConfigError("retry_interval_seconds 必须为 5")
+    if runtime.sign_submit_delay_seconds < 0:
+        raise ConfigError("sign_submit_delay_seconds 不能小于 0")
