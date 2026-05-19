@@ -47,7 +47,7 @@
 | XIXUNYUN_PASSWORD             | Y3xhaCkb5PZ4           | 习讯云密码     |
 | XIXUNYUN_ADDRESS_NAME         | 中国科学院控股有限公司 | 地点名称       |
 | XIXUNYUN_NOTIFICATION_ENABLED | true                   | 启用推送功能   |
-| XIXUNYUN_PUSH_DEVICE_KEY      | J65KWMBfyDh3YPLpcvm8   | 推送服务的 Key |
+| XIXUNYUN_PUSH_DEVICE_KEY      | J65KWMBfyDh3YPLpcvm8   | 推送服务 Key |
 
 > 尚未完成首次签到时，需要添加以下字段。建议先在“习讯云”App 中完成一次手动签到，再使用上述字段，不建议优先使用下述字段。
 
@@ -63,15 +63,15 @@
 | XIXUNYUN_LONGITUDE            | 123.123456                                   | 地点经度       |
 | XIXUNYUN_LATITUDE             | 12.123456                                    | 地点纬度       |
 | XIXUNYUN_NOTIFICATION_ENABLED | true                                         | 启用推送功能   |
-| XIXUNYUN_PUSH_DEVICE_KEY      | J65KWMBfyDh3YPLpcvm8                         | 推送服务的 Key |
+| XIXUNYUN_PUSH_DEVICE_KEY      | J65KWMBfyDh3YPLpcvm8                         | 推送服务 Key |
 
 ### 4. 开启 Actions
 
-`Actions` → `I understand my workflows, go ahead and enable them` → `CheckScores` → `Enable workflow`
+`Actions` → `I understand my workflows, go ahead and enable them` → `XiXunYunSignin` → `Enable workflow`
 
 ### 5. 运行 程序
 
-`Actions` → `CheckScores` → `Run workflow`
+`Actions` → `XiXunYunSignin` → `Run workflow`
 
 _若程序正常运行且未报错，此后程序会在每天 UTC+8 的 08:00 自动执行签到。_
 
