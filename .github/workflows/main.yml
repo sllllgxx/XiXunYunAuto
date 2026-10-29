@@ -87,7 +87,6 @@ jobs:
 
           # 字段级 Secret 只在配置文件对应字段为空时参与补值。
           XIXUNYUN_SCHOOL_NAME: ${{ secrets.XIXUNYUN_SCHOOL_NAME }}
-          XIXUNYUN_SCHOOL_ID: ${{ secrets.XIXUNYUN_SCHOOL_ID }}
           XIXUNYUN_ACCOUNT: ${{ secrets.XIXUNYUN_ACCOUNT }}
           XIXUNYUN_PASSWORD: ${{ secrets.XIXUNYUN_PASSWORD }}
           XIXUNYUN_ADDRESS: ${{ secrets.XIXUNYUN_ADDRESS }}
